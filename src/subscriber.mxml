@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Application xmlns:fx="http://ns.adobe.com/mxml/2009"
+			   xmlns:s="library://ns.adobe.com/flex/spark"
+			   xmlns:mx="library://ns.adobe.com/flex/mx"
+			   width="220" height="176" minWidth="220" minHeight="176" 
+                currentState="start" creationComplete="init()">
+	<fx:Script><![CDATA[
+
+		import flash.events.*;
+		import flash.media.*;
+		import flash.net.*;
+		
+		import mx.core.FlexGlobals;
+		import mx.events.FlexEvent;
+		
+		import org.osmf.net.StreamType;
+		
+		import spark.components.mediaClasses.DynamicStreamingVideoItem;
+		import spark.components.mediaClasses.DynamicStreamingVideoSource;
+		
+		{
+			private static var nc:NetConnection;
+			private static var ns:NetStream;
+
+			private static var playerVideo:Video;
+			
+			[Bindable]
+			private static var WIDTH:int = 320;			
+			
+			[Bindable]
+			private static var HEIGHT:int = 240;	
+
+			[Bindable]
+			public var host:String;
+			
+			[Bindable]
+			public var appName:String;
+			
+			[Bindable]
+			public var roomName:String;
+			
+			[Bindable]
+			public var streamName:String;
+			
+			private function init():void {
+				Security.allowDomain("*");				
+				if (FlexGlobals.topLevelApplication.parameters.hasOwnProperty('host')) {
+					// host override parameter
+					host = FlexGlobals.topLevelApplication.parameters.host;
+				} else {
+					var url:String;
+					if (stage.loaderInfo) {
+						url = stage.loaderInfo.url;
+					} else {
+						url = loaderInfo.url;
+					}
+					var pattern:RegExp = new RegExp("(http|https)://([^/]*)/");
+					if (pattern.test(url) == true) {
+						var results:Array = pattern.exec(url);
+						host = results[2];
+						//need to strip the port to avoid confusion
+						if (host.indexOf(":") > 0) {
+							host = host.split(":")[0];
+						}
+					}
+				}
+				// get app name
+				appName = FlexGlobals.topLevelApplication.parameters.appName;
+				// get room name
+				roomName = FlexGlobals.topLevelApplication.parameters.roomName;
+				// get stream name
+				streamName = FlexGlobals.topLevelApplication.parameters.streamName;
+                // get dimensions
+				if (FlexGlobals.topLevelApplication.parameters.hasOwnProperty('width')) {
+					WIDTH = new int(FlexGlobals.topLevelApplication.parameters.width);
+				}
+				if (FlexGlobals.topLevelApplication.parameters.hasOwnProperty('height')) {
+					HEIGHT = new int(FlexGlobals.topLevelApplication.parameters.height);
+				}
+				// setup our callbacks for javascript
+				ExternalInterface.addCallback("connect", connect);				
+				ExternalInterface.addCallback("disconnect", disconnect);
+				ExternalInterface.addCallback("isPlaying", isPlaying);
+			}
+						
+			public function isPlaying():Boolean {
+				log("isPlaying: " + streamName);
+				return currentState === "playback";
+			}
+			
+			// called if the requested stream is already live
+			public function startPlayback():void {
+				//ExternalInterface.call("alert", "Trying to playback...");
+				if (playerVideo) {
+					if (playerDisplay && playerDisplay.contains(playerVideo)) {
+						playerDisplay.removeChild(playerVideo);
+					}
+				}
+				currentState = "playback";
+				playerVideo = new Video(WIDTH, HEIGHT);
+				playerVideo.smoothing = true;
+				playerVideo.attachNetStream(ns);
+				playerDisplay.addChild(playerVideo);
+				ns.play(streamName, -1, -1);
+			}
+		
+			public function stopPlayback():void {
+				if (playerVideo) {
+					if (playerDisplay && playerDisplay.contains(playerVideo)) {
+						playerDisplay.removeChild(playerVideo);
+					}
+				}
+				playerVideo.attachNetStream(null);
+				ns.close();
+			}
+					
+			// connect
+			public function connect(... evt):void {
+				if (nc != null && nc.connected) {
+					disconnect(evt);
+				}			
+				log("Connecting playback");
+				// create the netConnection
+				nc = new NetConnection();
+				nc.objectEncoding = ObjectEncoding.AMF3;
+				// set it's client/focus to this
+				nc.client = this;
+				nc.proxyType = "best";
+				// add listeners for netstatus and security issues
+				nc.addEventListener(NetStatusEvent.NET_STATUS, nc.client.onStatus);
+				var uri:String = "rtmp://" + host + "/" + appName + "/" + roomName;
+				log("Connect uri: " + uri);
+				nc.connect(uri, null);
+			}
+			
+			// disconnect
+			public function disconnect(... evt):void {
+				if (nc != null && nc.connected) {
+					log("Disconnecting");
+					try {
+						nc.close();
+					} catch(e:Error) {
+						log("Error on disconnect: " + e.message);
+					}
+				}
+			}
+			
+			public function onBWDone(... obj):void {
+				// have to have this for an RTMP connection
+				log('Bandwidth check completed');
+			}
+			
+			public function onBWCheck(... rest):uint { 
+				log("onBWCheck");
+				//have to return something, so returning anything :)
+				return 0;
+			}		
+			
+			public function onResult(val:*):void	{
+				log("onResult: " + val);
+			}			
+			
+			// handles the response to isStreaming
+			public function onStreamCheckResult(val:*):void	{
+				log("Stream is available for playback: " + val);
+				if (val) {
+					startPlayback();				
+				}
+			}			
+			
+			public function onStatus(evt:NetStatusEvent):void {
+				log("NetConnection.onStatus: " + evt.info.code + " Description: " + evt.info.description);
+				if (evt.info !== '' || evt.info !== null) { 
+					var desc:String = evt.info.description;
+					switch (evt.info.code) {
+						case "NetConnection.Connect.Success":  
+							log("Connected");   
+							// setup the netstream
+							ns = new NetStream(nc);
+							ns.addEventListener(NetStatusEvent.NET_STATUS, onStatus);
+							ns.client = this;
+							flash.utils.setTimeout(startPlayback, 500);
+							break;
+						case "NetConnection.Connect.Failed":
+							ExternalInterface.call("alert", "Connection failed");
+							break;
+						case "NetConnection.Connect.Rejected":
+							log("Connection rejected");
+							break;
+						case "NetConnection.Connect.Closed":   
+							log("Disconnected");
+							break;
+						case "NetConnection.Call.Failed":
+							ExternalInterface.call("alert", "Remote call failed");
+							break;
+						// NS events
+						case "NetStream.Play.Start":
+							log("Playing: " + streamName);
+							break;
+						case "NetStream.Play.NotFound":
+							log("Stream not found: " + streamName);
+							break;
+						case "NetStream.Play.Stop":
+							log("Playback has stopped");
+							currentState = "start";
+							break;						
+						case "NetStream.Failed":
+							log("Stream error - An error has occured in the net stream");
+							break;						
+						case "NetStream.Video.DimensionChange":
+							log("Stream video change");
+							break;						
+						default: 
+							log("Unhandled status");
+							break;
+					}           
+				}
+			}
+
+			public function log(message:String):void {
+				ExternalInterface.call("log", streamName, message);			
+			}				
+			
+		}
+	]]></fx:Script>
+	<s:states>
+		<s:State name="start"/>
+		<s:State name="playback"/>
+	</s:states>
+	<s:Image includeIn="start" x="0" y="0" width="{WIDTH}" height="{HEIGHT}" smooth="false" 
+			 source="assets/red5-button.png" click="connect(event)"/>
+	<s:SpriteVisualElement includeIn="playback" id="playerDisplay"
+			 x="0" y="0" width="{WIDTH}" height="{HEIGHT}"
+			 opaqueBackground="#00ff00"/>
+</s:Application>

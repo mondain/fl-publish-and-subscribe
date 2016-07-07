@@ -1,0 +1,63 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<!-- saved from url=(0014)about:internet -->
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"> 
+<head>
+<title>Publish - NS.Send Test</title>
+<meta name="google" value="notranslate" />         
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<script type="text/javascript" src="swfobject.js"></script>
+<script type="text/javascript">
+    "use strict"
+    // keep track of who we are publisher-wise
+    var streamName = getQueryVariable('streamName');
+
+    // exits and cleans up
+    function closeAndExit() {
+        // disconnect the flash swf
+        document.getElementById(streamName).disconnect();
+    }
+
+    function getQueryVariable(variable) {
+        var query = window.location.search.substring(1);
+        var vars = query.split('&');
+        for (var i = 0; i < vars.length; i++) {
+            var pair = vars[i].split('=');
+            if (decodeURIComponent(pair[0]) == variable) {
+                return decodeURIComponent(pair[1]);
+            }
+        }
+        console.log('Query variable %s not found', variable);
+    }
+
+    function log(id, message) {
+      console.log(id + ' - ' + message);
+    }
+</script>
+</head>
+<body>
+<div id="container"></div>
+<script type="text/javascript">
+    // construct the divs
+    var div = document.createElement('div');
+    div.id = streamName;
+    div.style.cssText = 'width:320px;height:400px;background:#eee;';
+    document.getElementById('container').appendChild(div);
+    var vid = document.createElement('video');
+    vid.id = streamName + '_vid';
+    vid.autoplay = true;
+    document.getElementById(streamName).appendChild(vid);
+    // swf stuff
+    var params={};params.quality="high";params.allowscriptaccess="sameDomain";
+    // participant 1
+    var a1vars={};a1vars.host=location.hostname;a1vars.appName="live";a1vars.roomName="test";a1vars.streamName=streamName;
+    var a1attrs={};a1attrs.id=streamName;a1attrs.name=streamName;a1attrs.align="middle";
+    swfobject.embedSWF("subscriber.swf", streamName, "320", "400", "11.1.0", "", a1vars, params, a1attrs);
+</script>
+Click on the swf to attempt publishing. Additional clicks will try to switch camera inputs.
+<br /><br />
+Control
+<br />
+<button id="closeAndExit" onclick="closeAndExit()">Exit</button>
+</body>
+</html>
+

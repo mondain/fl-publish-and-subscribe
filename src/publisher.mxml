@@ -1,0 +1,336 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Application xmlns:fx="http://ns.adobe.com/mxml/2009"
+			   xmlns:s="library://ns.adobe.com/flex/spark"
+			   xmlns:mx="library://ns.adobe.com/flex/mx"
+			   width="320" height="400" minWidth="220" minHeight="176"
+			    currentState="start" creationComplete="init()">
+	<fx:Script><![CDATA[
+
+		import flash.events.*;
+		import flash.media.*;
+		import flash.net.*;
+		
+		import mx.core.FlexGlobals;
+		import mx.events.FlexEvent;
+		
+		import org.osmf.net.StreamType;
+		
+		import spark.components.mediaClasses.DynamicStreamingVideoItem;
+		import spark.components.mediaClasses.DynamicStreamingVideoSource;
+		
+		{
+			private static var nc:NetConnection;
+			private static var ns:NetStream;
+
+			private static var playerVideo:Video;
+			private static var cam:Camera;			
+			private static var mic:Microphone;
+			
+			[Bindable]
+			private static var WIDTH:int = 320;			
+			
+			[Bindable]
+			private static var HEIGHT:int = 240;	
+
+			[Bindable]
+			public var host:String;
+			
+			[Bindable]
+			public var appName:String;
+			
+			[Bindable]
+			public var roomName:String;
+			
+			[Bindable]
+			public var streamName:String;
+
+			// whether or not you are publishing
+			[Bindable]
+			public var publishing:Boolean = false;
+			
+			public var camIndex:int = 0;
+			
+			private function init():void {
+				Security.allowDomain("*");				
+				if (FlexGlobals.topLevelApplication.parameters.hasOwnProperty('host')) {
+					// host override parameter
+					host = FlexGlobals.topLevelApplication.parameters.host;
+				} else {
+					var url:String;
+					if (stage.loaderInfo) {
+						url = stage.loaderInfo.url;
+					} else {
+						url = loaderInfo.url;
+					}
+					var pattern:RegExp = new RegExp("(http|https)://([^/]*)/");
+					if (pattern.test(url) == true) {
+						var results:Array = pattern.exec(url);
+						host = results[2];
+						//need to strip the port to avoid confusion
+						if (host.indexOf(":") > 0) {
+							host = host.split(":")[0];
+						}
+					}
+				}
+				// get app name
+				appName = FlexGlobals.topLevelApplication.parameters.appName;
+				// get room name
+				roomName = FlexGlobals.topLevelApplication.parameters.roomName;
+				// get stream name
+				streamName = FlexGlobals.topLevelApplication.parameters.streamName;
+				if (FlexGlobals.topLevelApplication.parameters.hasOwnProperty('width')) {
+					WIDTH = new int(FlexGlobals.topLevelApplication.parameters.width);
+				}
+				if (FlexGlobals.topLevelApplication.parameters.hasOwnProperty('height')) {
+					HEIGHT = new int(FlexGlobals.topLevelApplication.parameters.height);
+				}
+				// setup our callbacks for javascript
+				ExternalInterface.addCallback("connect", connect);				
+				ExternalInterface.addCallback("disconnect", disconnect);
+				ExternalInterface.addCallback("isPublishing", isPublishing);
+			}
+			
+			public function isPublishing():Boolean {
+				log("isPublishing: " + streamName);
+				return currentState === "publish" && publishing;
+			}
+			
+			// change the camera
+			public function changeCamera(... evt):void {
+				camIndex += 1;
+				if (camIndex >= Camera.names.length) {
+					camIndex = 0;
+				}
+				if (ns) {
+					ns.attachCamera(null);
+				}
+				// publish / update netstream
+				flash.utils.setTimeout(publish, 500);
+			}
+			
+			// publish our stream
+			public function publish(... evt):void {
+				//ExternalInterface.call("alert", "Trying to publish...");
+				// get the first camera
+				if (Camera.names.length > 0) {
+					currentState = "publish";
+					try {
+						log("Camera index: " + camIndex + " name: " + Camera.names[camIndex]);
+						cam = Camera.getCamera(String(camIndex));    
+						mic = Microphone.getEnhancedMicrophone();
+					} catch (e:Error) {
+						log("Error: " + e.message);
+					}
+					if (cam) {
+						// set props
+						cam.setMode(WIDTH, HEIGHT, 15);
+						cam.setQuality(0, 96);
+						cam.setKeyFrameInterval(150);			
+						//ExternalInterface.call("alert", "Camera selected: " + Camera.names[camIndex]);				
+						// change video display to the new camera
+						flash.utils.setTimeout(attachCamera, 500);
+						// add h.264 settings
+						var h264Settings:H264VideoStreamSettings = new H264VideoStreamSettings();
+						h264Settings.setProfileLevel(H264Profile.BASELINE, H264Level.LEVEL_3);						
+						ns.videoStreamSettings = h264Settings;						
+						// add camera to the netstream
+						ns.attachCamera(cam);
+						log("Camera: " + cam.name);
+					} else {
+						log("There was a problem connecting to your camera");
+						cam = null;
+						ns.attachCamera(cam);
+					}
+					if (mic) {
+						// audio attach
+						mic.codec = SoundCodec.SPEEX;
+						mic.enhancedOptions.mode = MicrophoneEnhancedMode.FULL_DUPLEX;
+						mic.enhancedOptions.echoPath = 256;
+						mic.encodeQuality = 6;
+						mic.rate = 22; // 16 kHz
+						mic.gain = 80;
+						//mic.framesPerPacket = 5; // 20 ms each
+						mic.setUseEchoSuppression(true);
+						mic.setLoopBack(false);
+						mic.enableVAD = true;
+						ns.attachAudio(mic);
+					} else {
+						log("There was a problem connecting to your microphone");
+						mic = null;
+						ns.attachAudio(mic);
+					}					
+					if (cam || mic) {
+						// if we're already publishing dont restart it
+						if (!publishing) {
+							// publish
+							ns.publish(streamName, "live");
+						}
+					}
+				} else {
+					ExternalInterface.call("alert", "No media capture device detected");
+				}
+			}			
+
+			public function stopPublish(evt:Event):void {
+				if (ns) {
+					ns.attachCamera(null);
+					ns.attachAudio(null);
+					disconnect(evt);
+				}
+				currentState = "start";				
+			}
+			
+			// connect
+			public function connect(... evt):void {
+				if (nc != null && nc.connected) {
+					disconnect(evt);
+				}
+				// create the netConnection
+				nc = new NetConnection();
+				nc.objectEncoding = ObjectEncoding.AMF3;
+				// set it's client/focus to this
+				nc.client = this;
+				nc.proxyType = "best";
+				// add listeners for netstatus and security issues
+				nc.addEventListener(NetStatusEvent.NET_STATUS, nc.client.onStatus);
+				var uri:String = "rtmp://" + host + "/" + appName + "/" + roomName;
+				log("Connect uri: " + uri);
+				nc.connect(uri, null);
+			}
+			
+			// disconnect
+			public function disconnect(... evt):void {
+				if (nc != null && nc.connected) {
+					log("Disconnecting");
+					try {
+						nc.close();
+					} catch(e:Error) {
+						log("Error on disconnect: " + e.message);
+					}
+				}
+			}
+			
+			public function onBWDone(... obj):void {
+				// have to have this for an RTMP connection
+				log('Bandwidth check completed');
+			}
+			
+			public function onBWCheck(... rest):uint { 
+				log("onBWCheck");
+				//have to return something, so returning anything :)
+				return 0;
+			}		
+			
+			public function onResult(val:*):void	{
+				log("onResult: " + val);
+			}		
+			
+			public function onStatus(evt:NetStatusEvent):void {
+				log("NetConnection.onStatus: " + evt.info.code + " Description: " + evt.info.description);
+				if (evt.info !== '' || evt.info !== null) { 
+					var desc:String = evt.info.description;
+					switch (evt.info.code) {
+						case "NetConnection.Connect.Success":  
+							log("Connected");   
+							// setup the netstream
+							ns = new NetStream(nc);
+							ns.addEventListener(NetStatusEvent.NET_STATUS, onStatus);
+							ns.client = this;
+							// auto publish
+							flash.utils.setTimeout(publish, 500);
+							break;
+						case "NetConnection.Connect.Failed":
+							ExternalInterface.call("alert", "Connection failed");
+							break;
+						case "NetConnection.Connect.Rejected":
+							log("Connection rejected");
+							break;
+						case "NetConnection.Connect.Closed":   
+							log("Disconnected");
+							// reset publishing flag
+							publishing = false;
+							break;
+						case "NetConnection.Call.Failed":
+							ExternalInterface.call("alert", "Remote call failed");
+							break;
+						// NS events
+						case "NetStream.Publish.Start":
+							log("Publishing: " + streamName);
+							publishing = true;
+							// set active id
+							ExternalInterface.call("setActiveId", streamName);	
+							break;
+						case "NetStream.Publish.BadName":
+							ExternalInterface.call("alert", "Publish error - A stream already exists for the name requested: " + streamName);
+							break;
+						case "NetStream.Unpublish.Success":
+						case "NetStream.Publish.Stop":
+							log("Publish has stopped");
+							publishing = false;
+							currentState = "start";
+							break;					
+						case "NetStream.Failed":
+							log("Stream error - An error has occured in the net stream");
+							break;						
+						case "NetStream.Video.DimensionChange":
+							log("Stream video change");
+							break;						
+						default: 
+							log("Unhandled status");
+							break;
+					}           
+				}
+			}		
+			
+			public function attachCamera(... evt):void {
+				if (cam) {
+					// attach the camera
+					if (playerVideo) {
+						playerVideo.clear();
+						playerVideo.attachCamera(null);
+					} else {
+						playerVideo = new Video(WIDTH, HEIGHT);
+						playerVideo.smoothing = true;
+					}
+					playerVideo.attachCamera(cam);
+					publishDisplay.addChild(playerVideo);
+					log("Camera dimensions: " + cam.width + " x " + cam.height);
+				}
+			}
+
+			public function log(message:String):void {
+				ExternalInterface.call("log", streamName, message);			
+			}			
+			
+		}
+		
+		protected function sendBtn_clickHandler(event:MouseEvent):void {
+			ns.send("onStreamSend", "rnd:"+Math.ceil(Math.random() * 9999));
+		}
+		
+		protected function sendDFBtn_clickHandler(event:MouseEvent):void {
+			ns.send("@setDataFrame", "onStreamSend", "rnd:"+Math.ceil(Math.random() * 9999));
+		}
+		
+		protected function disconnBtn_clickHandler(event:MouseEvent):void {
+			if (nc.connected) {
+				nc.close();
+			}
+		}
+		
+	]]></fx:Script>
+	<s:states>
+		<s:State name="start"/>
+		<s:State name="publish"/>
+	</s:states>
+	<s:Image includeIn="start" x="0" y="0" width="{WIDTH}" height="{HEIGHT}" smooth="false" 
+			 source="assets/red5-button.png" click="connect(event)"/>
+	<s:SpriteVisualElement includeIn="publish" id="publishDisplay"
+			 x="0" y="0" minWidth="220" minHeight="176" width="{WIDTH}" height="{HEIGHT}"
+			 opaqueBackground="#0000ff" click="changeCamera(event)"/>
+	<s:HGroup x="10" y="332" width="301" height="58" horizontalAlign="center" verticalAlign="middle">
+		<s:Button label="Send" click="sendBtn_clickHandler(event)"/>
+		<s:Button label="Send DF" click="sendDFBtn_clickHandler(event)"/>
+		<s:Button label="Disconnect" click="disconnBtn_clickHandler(event)"/>
+	</s:HGroup>
+</s:Application>
